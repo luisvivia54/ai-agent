@@ -10,7 +10,6 @@ Corre con: python -m uvicorn server:app --host 0.0.0.0 --port 8000
 """
 
 import json
-import os
 import asyncio
 import urllib.request
 import urllib.error
@@ -41,6 +40,14 @@ def get_agent(session_id: str = "default") -> AIAgent:
         _agents[session_id] = AIAgent()
     return _agents[session_id]
 
+def _set_session(session_id: str):
+    """Setea la sesión activa para que PENDING funcione por número de WhatsApp."""
+    try:
+        from tools.tocho5 import set_session
+        set_session(session_id)
+    except Exception:
+        pass
+
 
 # ── Modelos ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +68,7 @@ async def root():
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
+    _set_session(req.session_id)
     agent = get_agent(req.session_id)
     reply = await asyncio.to_thread(agent.chat, req.message)
     return {"reply": reply}
@@ -114,7 +122,11 @@ async def whatsapp_receive(request: Request):
         text        = message["text"]["body"]
         print(f"📩 WhatsApp de {from_number}: {text}")
 
-        agent = get_agent(f"wa_{from_number}")
+        # Sesión única por número de teléfono
+        session_id = f"wa_{from_number}"
+        _set_session(session_id)
+        agent = get_agent(session_id)
+
         reply = await asyncio.to_thread(agent.chat, text)
         await asyncio.to_thread(_send_whatsapp, from_number, reply)
         return JSONResponse({"status": "ok"})
@@ -131,6 +143,10 @@ def _send_whatsapp(to: str, message: str):
     if not token or not phone_id:
         print(f"⚠️  WhatsApp no configurado.")
         return
+
+    # WhatsApp limita mensajes a 1600 chars
+    if len(message) > 1600:
+        message = message[:1550] + "\n\n_(mensaje truncado)_"
 
     url     = f"https://graph.facebook.com/v19.0/{phone_id}/messages"
     payload = json.dumps({

@@ -22,7 +22,23 @@ from tools.base import BaseTool
 
 # ── Config ───────────────────────────────────────────────────────────────────
 BASE_URL = os.getenv("TOCHO5_API_URL", "http://localhost:8080").rstrip("/")
-PENDING: dict = {}   # confirmaciones pendientes
+# Pendientes por session_id → {session_id: {key: op}}
+_PENDING_STORE: dict = {}
+
+def get_pending(session_id: str = "default") -> dict:
+    if session_id not in _PENDING_STORE:
+        _PENDING_STORE[session_id] = {}
+    return _PENDING_STORE[session_id]
+
+# Sesión activa (se setea desde el agente antes de cada llamada)
+_current_session: str = "default"
+
+def set_session(session_id: str):
+    global _current_session
+    _current_session = session_id
+
+def PENDING() -> dict:
+    return get_pending(_current_session)
 
 
 def _headers() -> dict:
@@ -91,8 +107,9 @@ def _confirm_or_execute(tool_id: str, summary: str, method: str, path: str, body
     Segunda llamada con confirmed=True → ejecuta.
     """
     key = f"{tool_id}:{path}"
-    if key not in PENDING:
-        PENDING[key] = {"method": method, "path": path, "body": body}
+    pending = PENDING()
+    if key not in pending:
+        pending[key] = {"method": method, "path": path, "body": body}
         lines = [
             f"⚠️  **Confirmación requerida**",
             f"",
@@ -108,7 +125,7 @@ def _confirm_or_execute(tool_id: str, summary: str, method: str, path: str, body
         return "\n".join(lines)
 
     # Segunda llamada con confirmed=True → ejecutar
-    op = PENDING.pop(key)
+    op = PENDING().pop(key)
     result = _request(op["method"], op["path"], op["body"])
     return f"✅ Ejecutado:\n{result}"
 
@@ -288,11 +305,11 @@ class ConfirmActionTool(BaseTool):
 
     def run(self, operation_key: str, confirmed: bool, **kwargs) -> str:
         if not confirmed:
-            PENDING.pop(operation_key, None)
+            PENDING().pop(operation_key, None)
             return "❌ Operación cancelada."
-        if operation_key not in PENDING:
+        if operation_key not in PENDING():
             return "⚠️ No hay operación pendiente con esa clave. Intenta de nuevo."
-        op = PENDING.pop(operation_key)
+        op = PENDING().pop(operation_key)
         result = _request(op["method"], op["path"], op["body"])
         return f"✅ Operación ejecutada:\n{result}"
 

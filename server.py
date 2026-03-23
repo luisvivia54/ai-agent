@@ -93,6 +93,26 @@ async def health():
     return {"status": "ok", "model": Config.MODEL}
 
 
+# ── Debug Keycloak ────────────────────────────────────────────────────────────
+
+@app.get("/debug/keycloak")
+async def debug_keycloak():
+    """Diagnóstico de conexión a Keycloak. Quitar en producción."""
+    try:
+        from keycloak import token_manager
+        token = token_manager.get_token()
+        return {
+            "keycloak_url":  token_manager.url,
+            "realm":         token_manager.realm,
+            "client_id":     token_manager.client_id,
+            "configured":    token_manager.is_configured,
+            "token_ok":      bool(token),
+            "token_preview": (token[:40] + "...") if token else "VACÍO",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── WhatsApp Webhook ─────────────────────────────────────────────────────────
 
 @app.get("/webhook")

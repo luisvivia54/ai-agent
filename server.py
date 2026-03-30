@@ -11,6 +11,8 @@ Corre con: python -m uvicorn server:app --host 0.0.0.0 --port 8000
 
 import json
 import asyncio
+import base64
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -47,6 +49,88 @@ def _set_session(session_id: str):
         set_session(session_id)
     except Exception:
         pass
+
+
+def _mask_token(token: str) -> str:
+    token = (token or "").strip()
+    if not token:
+        return "VACIO"
+    if len(token) <= 24:
+        return token[:8] + "..."
+    return token[:12] + "..." + token[-8:]
+
+
+def _strip_bearer(value: str) -> str:
+    raw = (value or "").strip()
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return raw
+
+
+def _decode_jwt_payload(token: str) -> dict:
+    raw = _strip_bearer(token)
+    if not raw:
+        return {}
+
+    parts = raw.split(".")
+    if len(parts) < 2:
+        return {}
+
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload + padding)
+        return json.loads(decoded.decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def _token_debug_summary(payload: dict) -> dict:
+    now = int(time.time())
+    exp = payload.get("exp")
+    iat = payload.get("iat")
+    realm_access = payload.get("realm_access") or {}
+    resource_access = payload.get("resource_access") or {}
+    realm_roles = realm_access.get("roles") if isinstance(realm_access, dict) else []
+
+    return {
+        "iss": payload.get("iss"),
+        "azp": payload.get("azp"),
+        "aud": payload.get("aud"),
+        "sub": payload.get("sub"),
+        "preferred_username": payload.get("preferred_username"),
+        "client_id": payload.get("clientId") or payload.get("client_id"),
+        "realm_roles": realm_roles,
+        "has_admin_role": "admin" in [str(r).lower() for r in (realm_roles or [])],
+        "resource_access_keys": list(resource_access.keys()) if isinstance(resource_access, dict) else [],
+        "issued_at": iat,
+        "expires_at": exp,
+        "expires_in_seconds": (exp - now) if isinstance(exp, int) else None,
+    }
+
+
+def _probe_backend_admin(headers: dict) -> dict:
+    try:
+        from tools.tocho5 import BASE_URL
+
+        url = f"{BASE_URL}/api/admin/__authcheck__"
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode()
+            return {
+                "url": url,
+                "status": resp.status,
+                "body_preview": body[:200],
+            }
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        return {
+            "url": getattr(e, "url", ""),
+            "status": e.code,
+            "body_preview": body[:300],
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ── Modelos ──────────────────────────────────────────────────────────────────
@@ -100,14 +184,26 @@ async def debug_keycloak():
     """Diagnóstico de conexión a Keycloak. Quitar en producción."""
     try:
         from keycloak import token_manager
-        token = token_manager.get_token()
+        from tools.tocho5 import STATIC_API_TOKEN, _headers
+
+        static_token = _strip_bearer(STATIC_API_TOKEN)
+        keycloak_token = token_manager.get_token()
+        auth_source = "static_api_token" if static_token else "keycloak"
+        selected_token = static_token or keycloak_token
+        payload = _decode_jwt_payload(selected_token)
+
         return {
             "keycloak_url":  token_manager.url,
             "realm":         token_manager.realm,
             "client_id":     token_manager.client_id,
             "configured":    token_manager.is_configured,
-            "token_ok":      bool(token),
-            "token_preview": (token[:40] + "...") if token else "VACÍO",
+            "static_api_token_present": bool(static_token),
+            "keycloak_token_ok": bool(keycloak_token),
+            "auth_source_selected": auth_source,
+            "selected_token_ok": bool(selected_token),
+            "selected_token_preview": _mask_token(selected_token),
+            "jwt_payload": _token_debug_summary(payload),
+            "backend_admin_probe": _probe_backend_admin(_headers()),
         }
     except Exception as e:
         return {"error": str(e)}

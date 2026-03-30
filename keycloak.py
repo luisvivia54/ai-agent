@@ -7,8 +7,12 @@ usando el flujo Client Credentials (machine-to-machine).
 Configura en .env:
   KEYCLOAK_URL           = https://auth.tu-dominio.com
   KEYCLOAK_REALM         = tu-realm
-  KEYCLOAK_CLIENT_ID     = ai-agent
+  KEYCLOAK_CLIENT_ID     = cliente-con-service-account-admin
   KEYCLOAK_CLIENT_SECRET = xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+Alternativa:
+  TOCHO5_API_TOKEN       = Bearer <jwt-admin>
+Si este bearer existe, las tools HTTP lo usarán directo y no pedirán token a Keycloak.
 """
 
 import json
@@ -99,7 +103,12 @@ class KeycloakTokenManager:
 
         except urllib.error.HTTPError as e:
             body = e.read().decode()
-            print(f"❌ Keycloak error HTTP {e.code}: {body[:200]}")
+            print(
+                "❌ Keycloak error HTTP "
+                f"{e.code}: {body[:200]} | "
+                "Revisa KEYCLOAK_URL/REALM/CLIENT_ID/CLIENT_SECRET y que el cliente "
+                "tenga service account con rol admin."
+            )
             self._token      = ""
             self._expires_at = 0.0
 

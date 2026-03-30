@@ -9,19 +9,22 @@ GET  → responden directo
 POST / PUT / PATCH / DELETE → piden confirmación antes de ejecutar
 """
 
+import contextvars
 import json
 import os
+import re
+import sys
+from typing import Optional, Set
 import urllib.request
 import urllib.error
 import urllib.parse
-import sys
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from keycloak import token_manager
 from tools.base import BaseTool
 
 # ── Config ───────────────────────────────────────────────────────────────────
 BASE_URL = os.getenv("TOCHO5_API_URL", "http://localhost:8080").rstrip("/")
+STATIC_API_TOKEN = os.getenv("TOCHO5_API_TOKEN", "").strip()
 # Pendientes por session_id → {session_id: {key: op}}
 _PENDING_STORE: dict = {}
 
@@ -31,14 +34,79 @@ def get_pending(session_id: str = "default") -> dict:
     return _PENDING_STORE[session_id]
 
 # Sesión activa (se setea desde el agente antes de cada llamada)
-_current_session: str = "default"
+_current_session: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "tocho5_current_session",
+    default="default",
+)
 
 def set_session(session_id: str):
-    global _current_session
-    _current_session = session_id
+    _current_session.set(session_id)
 
 def PENDING() -> dict:
-    return get_pending(_current_session)
+    return get_pending(_current_session.get())
+
+
+def _normalize_tool_id(value: Optional[str]) -> str:
+    return (value or "").strip().lower().replace("-", "_")
+
+
+def _normalize_auth_token(raw: str) -> str:
+    token = (raw or "").strip()
+    if not token:
+        return ""
+    return token if token.lower().startswith("bearer ") else f"Bearer {token}"
+
+
+def _extract_numeric_hints(value: Optional[str]) -> Set[str]:
+    return set(re.findall(r"\d+", value or ""))
+
+
+def _operation_matches_hint(op_key: str, op: dict, hint: str) -> bool:
+    hint_norm = (hint or "").strip().lower()
+    if not hint_norm:
+        return False
+
+    if hint_norm == op_key.lower():
+        return True
+
+    tool_hint = _normalize_tool_id(hint_norm.split(":", 1)[0])
+    pending_tool = _normalize_tool_id(op.get("tool_id") or op_key.split(":", 1)[0])
+    if tool_hint and tool_hint == pending_tool:
+        return True
+
+    hint_numbers = _extract_numeric_hints(hint_norm)
+    path_numbers = _extract_numeric_hints(op.get("path"))
+    if hint_numbers and path_numbers and hint_numbers.issubset(path_numbers):
+        if not tool_hint or tool_hint == pending_tool:
+            return True
+
+    path_lower = str(op.get("path", "")).lower()
+    if hint_norm in path_lower:
+        return True
+
+    return False
+
+
+def _resolve_pending_key(operation_key: Optional[str]) -> Optional[str]:
+    pending = PENDING()
+    if not pending:
+        return None
+
+    hint = (operation_key or "").strip()
+    if hint in pending:
+        return hint
+
+    matches = [
+        key for key, op in pending.items()
+        if _operation_matches_hint(key, op, hint)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+
+    if len(pending) == 1:
+        return next(iter(pending))
+
+    return None
 
 
 def _headers() -> dict:
@@ -49,7 +117,7 @@ def _headers() -> dict:
         "User-Agent": "Mozilla/5.0 (AI-Agent/1.0)",
         "Cache-Control": "no-cache",
     }
-    auth = token_manager.get_auth_header()
+    auth = _normalize_auth_token(STATIC_API_TOKEN) or token_manager.get_auth_header()
     if auth:
         h["Authorization"] = auth
     return h
@@ -109,7 +177,12 @@ def _confirm_or_execute(tool_id: str, summary: str, method: str, path: str, body
     key = f"{tool_id}:{path}"
     pending = PENDING()
     if key not in pending:
-        pending[key] = {"method": method, "path": path, "body": body}
+        pending[key] = {
+            "tool_id": tool_id,
+            "method": method,
+            "path": path,
+            "body": body,
+        }
         lines = [
             f"⚠️  **Confirmación requerida**",
             f"",
@@ -294,7 +367,7 @@ class ConfirmActionTool(BaseTool):
     parameters = {
         "operation_key": {
             "type": "string",
-            "description": "Clave de la operación pendiente (tool_id:path)",
+            "description": "Clave de la operación pendiente. Acepta la clave exacta o una referencia aproximada como tool_id:gameId si solo hay una coincidencia pendiente.",
         },
         "confirmed": {
             "type": "boolean",
@@ -304,12 +377,15 @@ class ConfirmActionTool(BaseTool):
     required = ["operation_key", "confirmed"]
 
     def run(self, operation_key: str, confirmed: bool, **kwargs) -> str:
+        resolved_key = _resolve_pending_key(operation_key)
         if not confirmed:
-            PENDING().pop(operation_key, None)
+            if resolved_key:
+                PENDING().pop(resolved_key, None)
+                return "❌ Operación cancelada."
             return "❌ Operación cancelada."
-        if operation_key not in PENDING():
+        if not resolved_key:
             return "⚠️ No hay operación pendiente con esa clave. Intenta de nuevo."
-        op = PENDING().pop(operation_key)
+        op = PENDING().pop(resolved_key)
         result = _request(op["method"], op["path"], op["body"])
         return f"✅ Operación ejecutada:\n{result}"
 
@@ -351,7 +427,7 @@ class CreateGameTool(BaseTool):
             f"Liga #{leagueId} · Cat #{categoryId} · {roundLabel} · {scheduledAt}"
             + (f" · Campo: {field}" if field else "")
         )
-        return _confirm_or_execute("create_game", summary, "POST", "/api/games", body)
+        return _confirm_or_execute(self.name, summary, "POST", "/api/games", body)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -385,7 +461,7 @@ class FinalizeGameTool(BaseTool):
             f"Finalizar partido #{gameId} con marcador {homeScore} - {awayScore} "
             f"({result_label}). Esto actualizará la tabla de posiciones."
         )
-        return _confirm_or_execute("finalize_game", summary, "POST", "/api/partido/update", body)
+        return _confirm_or_execute(self.name, summary, "POST", "/api/partido/update", body)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -411,7 +487,7 @@ class AdminEditScoreTool(BaseTool):
             f"Corregir marcador del partido #{gameId} → nuevo resultado: "
             f"{homeScore} - {awayScore}. ⚠️ Esto sobreescribe el marcador existente."
         )
-        return _confirm_or_execute("admin_edit_score", summary, "PATCH",
+        return _confirm_or_execute(self.name, summary, "PATCH",
                                    f"/api/admin/games/{gameId}/score", body)
 
 
@@ -437,7 +513,7 @@ class AdminDeleteGameTool(BaseTool):
             f"Si está FINALIZADO, se revertirán los puntos de la tabla. "
             f"⚠️ Esta acción no se puede deshacer fácilmente."
         )
-        return _confirm_or_execute("admin_delete_game", summary, "DELETE",
+        return _confirm_or_execute(self.name, summary, "DELETE",
                                    f"/api/admin/games/{gameId}")
 
 
@@ -474,7 +550,7 @@ class UpsertPlayerStatsTool(BaseTool):
             f"Registrar/actualizar estadísticas de {n} jugador(es) "
             f"para el partido #{gameId}."
         )
-        return _confirm_or_execute("upsert_player_stats", summary, "PUT",
+        return _confirm_or_execute(self.name, summary, "PUT",
                                    f"/api/games/{gameId}/player-stats", body)
 
 
@@ -494,5 +570,5 @@ class SetTeamActiveTool(BaseTool):
     def run(self, teamId: int, isActive: bool, **kwargs) -> str:
         action = "ACTIVAR" if isActive else "DESACTIVAR"
         summary = f"{action} el equipo #{teamId}. Esto afecta su visibilidad en la plataforma."
-        return _confirm_or_execute("set_team_active", summary, "PATCH",
+        return _confirm_or_execute(self.name, summary, "PATCH",
                                    f"/api/teams/{teamId}/active", {"isActive": isActive})

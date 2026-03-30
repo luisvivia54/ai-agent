@@ -16,8 +16,9 @@ import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -109,16 +110,15 @@ def _token_debug_summary(payload: dict) -> dict:
     }
 
 
-def _probe_backend_admin(headers: dict) -> dict:
+def _http_probe(url: str, method: str = "GET", headers: Optional[dict] = None, body: Optional[dict] = None) -> dict:
     try:
-        from tools.tocho5 import BASE_URL
-
-        url = f"{BASE_URL}/api/admin/__authcheck__"
-        req = urllib.request.Request(url, headers=headers, method="GET")
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
             return {
                 "url": url,
+                "method": method,
                 "status": resp.status,
                 "body_preview": body[:200],
             }
@@ -126,11 +126,32 @@ def _probe_backend_admin(headers: dict) -> dict:
         body = e.read().decode()
         return {
             "url": getattr(e, "url", ""),
+            "method": method,
             "status": e.code,
             "body_preview": body[:300],
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+def _probe_backend_admin_users(headers: dict) -> dict:
+    from tools.tocho5 import BASE_URL
+    return _http_probe(
+        f"{BASE_URL}/api/admin/users?page=0&size=1",
+        method="GET",
+        headers=headers,
+    )
+
+
+def _probe_backend_admin_score(headers: dict, game_id: int) -> dict:
+    from tools.tocho5 import BASE_URL
+    # Body inválido a propósito para validar auth/ruta sin mutar datos.
+    return _http_probe(
+        f"{BASE_URL}/api/admin/games/{game_id}/score",
+        method="PATCH",
+        headers=headers,
+        body={},
+    )
 
 
 # ── Modelos ──────────────────────────────────────────────────────────────────
@@ -180,7 +201,7 @@ async def health():
 # ── Debug Keycloak ────────────────────────────────────────────────────────────
 
 @app.get("/debug/keycloak")
-async def debug_keycloak():
+async def debug_keycloak(game_id: Optional[int] = Query(default=None)):
     """Diagnóstico de conexión a Keycloak. Quitar en producción."""
     try:
         from keycloak import token_manager
@@ -203,7 +224,8 @@ async def debug_keycloak():
             "selected_token_ok": bool(selected_token),
             "selected_token_preview": _mask_token(selected_token),
             "jwt_payload": _token_debug_summary(payload),
-            "backend_admin_probe": _probe_backend_admin(_headers()),
+            "backend_admin_users_probe": _probe_backend_admin_users(_headers()),
+            "backend_admin_score_probe": _probe_backend_admin_score(_headers(), game_id) if game_id else None,
         }
     except Exception as e:
         return {"error": str(e)}

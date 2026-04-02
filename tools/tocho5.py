@@ -253,15 +253,31 @@ def _confirm_or_execute(tool_id: str, summary: str, method: str, path: str, body
 
 class GetTeamsTool(BaseTool):
     name = "get_teams"
-    description = "Obtiene la lista de equipos. Filtra por leagueId, categoryCode o gender."
+    description = (
+        "Obtiene la lista de equipos. "
+        "Si envías `name`, busca equipos activos por nombre o short_name usando /api/teams/search "
+        "y puede filtrar por liga, categoría y género para desambiguar."
+    )
     parameters = {
+        "name":         {"type": "string",  "description": "Nombre o fragmento del equipo para buscar (opcional)"},
         "leagueId":     {"type": "number",  "description": "ID de la liga (opcional)"},
         "categoryCode": {"type": "string",  "description": "Código de categoría (opcional)"},
         "gender":       {"type": "string",  "description": "Género: M, F (opcional)"},
+        "limit":        {"type": "number",  "description": "Máximo de resultados para búsqueda por nombre (default 5, máximo 25)"},
     }
     required = []
 
-    def run(self, leagueId=None, categoryCode=None, gender=None, **kwargs) -> str:
+    def run(self, name=None, leagueId=None, categoryCode=None, gender=None, limit=None, **kwargs) -> str:
+        if name is not None and str(name).strip():
+            search_limit = 5 if limit is None else max(1, min(int(limit), 25))
+            return _get("/api/teams/search", {
+                "q": str(name).strip(),
+                "leagueId": leagueId,
+                "categoryCode": categoryCode,
+                "gender": gender,
+                "limit": search_limit,
+            })
+
         return _get("/api/teams", {"leagueId": leagueId, "categoryCode": categoryCode, "gender": gender})
 
 

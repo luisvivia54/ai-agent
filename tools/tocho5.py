@@ -14,7 +14,7 @@ import json
 import os
 import re
 import sys
-from typing import Optional, Set
+from typing import Any, Optional, Set
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -169,6 +169,50 @@ def _request(method: str, path: str, body: dict = None) -> str:
         return f"❌ Error: {e}"
 
 
+def _safe_json_loads(raw: str) -> Optional[Any]:
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _extract_games(payload: Any) -> list[dict]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    if isinstance(payload, dict):
+        for key in ("content", "items", "data", "results", "games"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+        if any(key in payload for key in ("game_id", "gameId", "id")):
+            return [payload]
+
+    return []
+
+
+def _game_matches_id(game: dict, game_id: int) -> bool:
+    wanted = str(game_id)
+    for key in ("game_id", "gameId", "id"):
+        value = game.get(key)
+        if value is not None and str(value) == wanted:
+            return True
+    return False
+
+
+def _find_game_in_raw_response(raw: str, game_id: int) -> Optional[dict]:
+    payload = _safe_json_loads(raw)
+    if payload is None:
+        return None
+
+    for game in _extract_games(payload):
+        if _game_matches_id(game, game_id):
+            return game
+
+    return None
+
+
 def _confirm_or_execute(tool_id: str, summary: str, method: str, path: str, body: dict = None) -> str:
     """
     Primera llamada  → guarda la operación pendiente y devuelve resumen para confirmar.
@@ -257,7 +301,10 @@ class GetTeamPlayersTool(BaseTool):
 
 class GetScheduledGamesTool(BaseTool):
     name = "get_scheduled_games"
-    description = "Lista los partidos programados (SCHEDULED). Filtra por liga, categoría, género o jornada."
+    description = (
+        "Lista los partidos programados (SCHEDULED). Filtra por liga, categoría, género o jornada. "
+        "No la uses para buscar un partido por ID exacto; para eso usa get_game_by_id."
+    )
     parameters = {
         "leagueId":   {"type": "number", "description": "ID de la liga (opcional)"},
         "code":       {"type": "string", "description": "Código de categoría (opcional)"},
@@ -272,7 +319,10 @@ class GetScheduledGamesTool(BaseTool):
 
 class GetFinalGamesTool(BaseTool):
     name = "get_final_games"
-    description = "Lista los partidos finalizados (FINAL) con marcadores. Filtra por liga, categoría, etc."
+    description = (
+        "Lista los partidos finalizados (FINAL) con marcadores. Filtra por liga, categoría, etc. "
+        "No la uses para buscar un partido por ID exacto; para eso usa get_game_by_id."
+    )
     parameters = {
         "leagueId":   {"type": "number", "description": "ID de la liga (opcional)"},
         "code":       {"type": "string", "description": "Código de categoría (opcional)"},
@@ -288,6 +338,58 @@ class GetFinalGamesTool(BaseTool):
             "leagueId": leagueId, "code": code, "gender": gender,
             "roundLabel": roundLabel, "size": size, "all": str(all).lower()
         })
+
+
+class GetGameByIdTool(BaseTool):
+    name = "get_game_by_id"
+    description = (
+        "Busca un partido por su ID global sin asumir liga. "
+        "Si no se especifica estado, busca primero en programados y luego en finalizados."
+    )
+    parameters = {
+        "gameId": {"type": "number", "description": "ID global del partido"},
+        "status": {"type": "string", "description": "Estado opcional: SCHEDULED o FINAL"},
+    }
+    required = ["gameId"]
+
+    def run(self, gameId: int, status=None, **kwargs) -> str:
+        wanted_status = (status or "").strip().upper()
+
+        searches: list[tuple[str, str, dict | None]] = []
+        if wanted_status == "SCHEDULED":
+            searches.append(("SCHEDULED", "/api/games", None))
+        elif wanted_status == "FINAL":
+            searches.append(("FINAL", "/api/gamesFinal", {"size": 1000, "all": "true"}))
+        else:
+            searches.append(("SCHEDULED", "/api/games", None))
+            searches.append(("FINAL", "/api/gamesFinal", {"size": 1000, "all": "true"}))
+
+        checked_sources = []
+        errors = []
+
+        for source_status, path, params in searches:
+            raw = _get(path, params)
+            checked_sources.append(source_status)
+
+            if raw.startswith("❌"):
+                errors.append({"status": source_status, "error": raw})
+                continue
+
+            game = _find_game_in_raw_response(raw, gameId)
+            if game:
+                return json.dumps({
+                    "found": True,
+                    "requestedGameId": gameId,
+                    "status": source_status,
+                    "game": game,
+                }, ensure_ascii=False)
+
+        return json.dumps({
+            "found": False,
+            "requestedGameId": gameId,
+            "checkedStatuses": checked_sources,
+            "errors": errors,
+        }, ensure_ascii=False)
 
 
 # ════════════════════════════════════════════════════════════════════════

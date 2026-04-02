@@ -10,6 +10,7 @@ POST / PUT / PATCH / DELETE → piden confirmación antes de ejecutar
 """
 
 import contextvars
+import hashlib
 import json
 import os
 import re
@@ -248,38 +249,42 @@ def _find_game_in_raw_response(raw: str, game_id: int) -> Optional[dict]:
     return None
 
 
+def _build_pending_key(tool_id: str, path: str, body: dict = None) -> str:
+    payload = json.dumps(body or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    return f"{tool_id}:{path}:{digest}"
+
+
 def _confirm_or_execute(tool_id: str, summary: str, method: str, path: str, body: dict = None) -> str:
     """
-    Primera llamada  → guarda la operación pendiente y devuelve resumen para confirmar.
-    Segunda llamada con confirmed=True → ejecuta.
+    Guarda la operación pendiente y devuelve resumen para confirmar.
+    La ejecución real solo debe ocurrir mediante `confirm_action`.
     """
-    key = f"{tool_id}:{path}"
+    key = _build_pending_key(tool_id, path, body)
     pending = PENDING()
-    if key not in pending:
-        pending[key] = {
-            "tool_id": tool_id,
-            "method": method,
-            "path": path,
-            "body": body,
-        }
-        lines = [
-            f"⚠️  **Confirmación requerida**",
-            f"",
-            f"  Operación : {method} {path}",
-            f"  Acción    : {summary}",
-        ]
-        if body:
-            lines.append(f"  Datos     : {json.dumps(body, ensure_ascii=False, indent=2)}")
-        lines += [
-            f"",
-            f"¿Confirmas esta operación? Responde **sí** para ejecutar o **no** para cancelar.",
-        ]
-        return "\n".join(lines)
+    for existing_key, op in list(pending.items()):
+        if op.get("tool_id") == tool_id and op.get("path") == path:
+            pending.pop(existing_key, None)
 
-    # Segunda llamada con confirmed=True → ejecutar
-    op = PENDING().pop(key)
-    result = _request(op["method"], op["path"], op["body"])
-    return f"✅ Ejecutado:\n{result}"
+    pending[key] = {
+        "tool_id": tool_id,
+        "method": method,
+        "path": path,
+        "body": body,
+    }
+    lines = [
+        f"⚠️  **Confirmación requerida**",
+        f"",
+        f"  Operación : {method} {path}",
+        f"  Acción    : {summary}",
+    ]
+    if body:
+        lines.append(f"  Datos     : {json.dumps(body, ensure_ascii=False, indent=2)}")
+    lines += [
+        f"",
+        f"¿Confirmas esta operación? Responde **sí** para ejecutar o **no** para cancelar.",
+    ]
+    return "\n".join(lines)
 
 
 # ════════════════════════════════════════════════════════════════════════

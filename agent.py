@@ -6,21 +6,24 @@ import json
 from openai import OpenAI
 from tools.registry import ToolRegistry
 from config import Config
+from tools.tocho5 import set_session
 
 MAX_HISTORY      = 10
 MAX_TOOL_RESULT  = 4000
 
 
 class AIAgent:
-    def __init__(self):
+    def __init__(self, session_id: str = "default"):
         self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
         self.registry = ToolRegistry()
         self.conversation_history = []
         self.model = Config.MODEL
+        self.session_id = session_id
         print(f"\n🤖 Agente iniciado con modelo: {self.model}")
         print(f"🔧 Herramientas cargadas: {', '.join(self.registry.get_tool_names()) or 'ninguna'}\n")
 
     def chat(self, user_message: str) -> str:
+        set_session(self.session_id)
         self.conversation_history.append({"role": "user", "content": user_message})
         self._trim_history()
 
@@ -101,6 +104,7 @@ class AIAgent:
 
     def _execute_tool_calls(self, tool_calls) -> list:
         results = []
+        set_session(self.session_id)
         for tc in tool_calls:
             tool_name = tc.function.name
             args = json.loads(tc.function.arguments)

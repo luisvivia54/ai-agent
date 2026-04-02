@@ -30,7 +30,7 @@ def main():
     print("=" * 55)
 
     check_config()
-    agent = AIAgent()
+    agent = AIAgent(session_id="cli")
 
     while True:
         try:

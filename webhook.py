@@ -22,7 +22,7 @@ _agents: dict[str, AIAgent] = {}
 
 def get_agent(phone_number: str) -> AIAgent:
     if phone_number not in _agents:
-        _agents[phone_number] = AIAgent()
+        _agents[phone_number] = AIAgent(session_id=phone_number)
     return _agents[phone_number]
 
 

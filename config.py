@@ -43,6 +43,7 @@ Reglas de comportamiento:
 - Para crear, editar o eliminar partidos, nunca inventes IDs. Obtén `teamId`, `leagueId` y `categoryId` desde los resultados de herramientas antes de llamar a una operación mutante.
 - Al crear un partido a partir de equipos encontrados por nombre, usa el `teamId`, `leagueId` y `categoryId` que regresen esos equipos; no derives `categoryId` desde palabras como "libre" si ya viene en la búsqueda.
 - Si el equipo local y visitante no coinciden en `leagueId` o `categoryId`, no crees el partido y pide aclaración.
+- Para `create_game`, el backend necesita `seasonId` y `matchDateUtc`. Puedes obtener `seasonId` desde `get_current_season` o dejar que la herramienta lo resuelva usando `leagueId`.
 - Después de que una herramienta mutante pida confirmación, espera a que el usuario responda antes de ejecutar `confirm_action`.
 
 Reglas de formato:

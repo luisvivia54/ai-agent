@@ -249,6 +249,22 @@ def _find_game_in_raw_response(raw: str, game_id: int) -> Optional[dict]:
     return None
 
 
+def _resolve_current_season_id(league_id: Optional[int]) -> Optional[int]:
+    if league_id is None:
+        return None
+
+    raw = _get("/api/seasons/current", {"leagueId": league_id})
+    payload = _safe_json_loads(raw)
+    if isinstance(payload, dict):
+        season_id = payload.get("seasonId") or payload.get("season_id") or payload.get("id")
+        if season_id is not None:
+            try:
+                return int(season_id)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _build_pending_key(tool_id: str, path: str, body: dict = None) -> str:
     payload = json.dumps(body or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
@@ -577,33 +593,48 @@ class CreateGameTool(BaseTool):
     name = "create_game"
     description = (
         "Crea un partido programado nuevo. "
-        "Solicita confirmación antes de guardar mostrando todos los datos del partido."
+        "Solicita confirmación antes de guardar mostrando todos los datos del partido. "
+        "Si solo envías leagueId, intenta resolver seasonId automáticamente."
     )
     parameters = {
         "homeTeamId":  {"type": "number", "description": "ID del equipo local"},
         "awayTeamId":  {"type": "number", "description": "ID del equipo visitante"},
-        "leagueId":    {"type": "number", "description": "ID de la liga"},
+        "leagueId":    {"type": "number", "description": "ID de la liga; se usa para resolver la temporada actual si falta seasonId"},
+        "seasonId":    {"type": "number", "description": "ID de la temporada activa; si falta, se intentará obtener desde leagueId"},
         "categoryId":  {"type": "number", "description": "ID de la categoría"},
         "roundLabel":  {"type": "string", "description": "Etiqueta de la jornada, ej: 'Jornada 5'"},
-        "scheduledAt": {"type": "string", "description": "Fecha/hora ISO8601, ej: 2025-08-10T18:00:00"},
+        "scheduledAt": {"type": "string", "description": "Fecha/hora ISO8601; se enviará al backend como matchDateUtc"},
         "field":       {"type": "string", "description": "Campo o cancha donde se juega (opcional)"},
     }
-    required = ["homeTeamId", "awayTeamId", "leagueId", "categoryId", "roundLabel", "scheduledAt"]
+    required = ["homeTeamId", "awayTeamId", "categoryId", "roundLabel", "scheduledAt"]
 
-    def run(self, homeTeamId: int, awayTeamId: int, leagueId: int, categoryId: int,
-            roundLabel: str, scheduledAt: str, field: str = None, **kwargs) -> str:
+    def run(self, homeTeamId: int, awayTeamId: int, categoryId: int,
+            roundLabel: str, scheduledAt: str, leagueId: int = None,
+            seasonId: int = None, field: str = None, **kwargs) -> str:
+
+        resolved_season_id = seasonId if seasonId is not None else _resolve_current_season_id(leagueId)
+        if resolved_season_id is None:
+            return (
+                "❌ No pude determinar la temporada activa para crear el partido. "
+                "Necesito `seasonId` o un `leagueId` válido con temporada actual."
+            )
 
         body = {
-            "homeTeamId": homeTeamId, "awayTeamId": awayTeamId,
-            "leagueId": leagueId, "categoryId": categoryId,
-            "roundLabel": roundLabel, "scheduledAt": scheduledAt,
+            "seasonId": resolved_season_id,
+            "categoryId": categoryId,
+            "homeTeamId": homeTeamId,
+            "awayTeamId": awayTeamId,
+            "matchDateUtc": scheduledAt,
+            "roundLabel": roundLabel,
         }
         if field:
-            body["field"] = field
+            body["venue"] = field
 
         summary = (
             f"Crear partido: equipo local #{homeTeamId} vs visitante #{awayTeamId} | "
-            f"Liga #{leagueId} · Cat #{categoryId} · {roundLabel} · {scheduledAt}"
+            f"Season #{resolved_season_id}"
+            + (f" · Liga #{leagueId}" if leagueId is not None else "")
+            + f" · Cat #{categoryId} · {roundLabel} · {scheduledAt}"
             + (f" · Campo: {field}" if field else "")
         )
         return _confirm_or_execute(self.name, summary, "POST", "/api/games", body)

@@ -57,6 +57,41 @@ def _normalize_auth_token(raw: str) -> str:
     return token if token.lower().startswith("bearer ") else f"Bearer {token}"
 
 
+def _normalize_gender_filter(value: Optional[str]) -> Optional[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+
+    normalized = re.sub(r"[\s_\-]+", "", raw).lower()
+    gender_aliases = {
+        "m": "VARONIL",
+        "masculino": "VARONIL",
+        "varonil": "VARONIL",
+        "hombre": "VARONIL",
+        "hombres": "VARONIL",
+        "f": "FEMENIL",
+        "femenil": "FEMENIL",
+        "femenino": "FEMENIL",
+        "mujer": "FEMENIL",
+        "mujeres": "FEMENIL",
+        "mixto": "MIXTO",
+        "mix": "MIXTO",
+    }
+    return gender_aliases.get(normalized, raw.upper())
+
+
+def _normalize_category_filter(value: Optional[str]) -> Optional[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+
+    if raw.isupper() and len(raw) <= 6 and " " not in raw:
+        return raw
+
+    words = [word.capitalize() for word in re.split(r"\s+", raw.lower()) if word]
+    return " ".join(words) if words else raw
+
+
 def _extract_numeric_hints(value: Optional[str]) -> Set[str]:
     return set(re.findall(r"\d+", value or ""))
 
@@ -268,17 +303,24 @@ class GetTeamsTool(BaseTool):
     required = []
 
     def run(self, name=None, leagueId=None, categoryCode=None, gender=None, limit=None, **kwargs) -> str:
+        normalized_category = _normalize_category_filter(categoryCode)
+        normalized_gender = _normalize_gender_filter(gender)
+
         if name is not None and str(name).strip():
             search_limit = 5 if limit is None else max(1, min(int(limit), 25))
             return _get("/api/teams/search", {
                 "q": str(name).strip(),
                 "leagueId": leagueId,
-                "categoryCode": categoryCode,
-                "gender": gender,
+                "categoryCode": normalized_category,
+                "gender": normalized_gender,
                 "limit": search_limit,
             })
 
-        return _get("/api/teams", {"leagueId": leagueId, "categoryCode": categoryCode, "gender": gender})
+        return _get("/api/teams", {
+            "leagueId": leagueId,
+            "categoryCode": normalized_category,
+            "gender": normalized_gender,
+        })
 
 
 class GetTeamByIdTool(BaseTool):
@@ -330,7 +372,12 @@ class GetScheduledGamesTool(BaseTool):
     required = []
 
     def run(self, leagueId=None, code=None, gender=None, roundLabel=None, **kwargs) -> str:
-        return _get("/api/games", {"leagueId": leagueId, "code": code, "gender": gender, "roundLabel": roundLabel})
+        return _get("/api/games", {
+            "leagueId": leagueId,
+            "code": _normalize_category_filter(code),
+            "gender": _normalize_gender_filter(gender),
+            "roundLabel": roundLabel,
+        })
 
 
 class GetFinalGamesTool(BaseTool):
@@ -351,7 +398,9 @@ class GetFinalGamesTool(BaseTool):
 
     def run(self, leagueId=None, code=None, gender=None, roundLabel=None, size=500, all=False, **kwargs) -> str:
         return _get("/api/gamesFinal", {
-            "leagueId": leagueId, "code": code, "gender": gender,
+            "leagueId": leagueId,
+            "code": _normalize_category_filter(code),
+            "gender": _normalize_gender_filter(gender),
             "roundLabel": roundLabel, "size": size, "all": str(all).lower()
         })
 
@@ -423,7 +472,11 @@ class GetStandingsTool(BaseTool):
     required = []
 
     def run(self, leagueId=None, categoryCode=None, gender=None, **kwargs) -> str:
-        return _get("/api/points", {"leagueId": leagueId, "categoryCode": categoryCode, "gender": gender})
+        return _get("/api/points", {
+            "leagueId": leagueId,
+            "categoryCode": _normalize_category_filter(categoryCode),
+            "gender": _normalize_gender_filter(gender),
+        })
 
 
 class GetPlayerStatsTool(BaseTool):
@@ -449,7 +502,10 @@ class GetCategoriesTool(BaseTool):
     required = []
 
     def run(self, leagueId=None, gender=None, **kwargs) -> str:
-        return _get("/api/categories", {"leagueId": leagueId, "gender": gender})
+        return _get("/api/categories", {
+            "leagueId": leagueId,
+            "gender": _normalize_gender_filter(gender),
+        })
 
 
 class GetSeasonsTool(BaseTool):
